@@ -1,0 +1,1221 @@
+---
+title: "cleaned script"
+output: html_document
+---
+
+Before stating with R, it is important to have one downloaded each table as a .csv file and name them as appropriate (e.g., Hereford_W.csv, Hereford_O.csv, SW_W.csv, SW_O.csv...). Only 4 columns are necessary: labeling, RpoB, PsGenus, HrcC
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Boot RSudio and load the necessary packages. Make sure they are installed in your computer.
+
+```{r}
+# Loading packages
+
+library(readr) # for reading csv
+library(kableExtra) # for pdf table
+library(stringr) # for labelling transformation
+library(reshape2) # for the use of dcast()
+library(openxlsx) # for saving as an .xlsx
+library(plyr)
+library(dplyr) # for the use of certain expressions
+library(data.table)
+```
+
+Once the packages are loaded, create a function to read the tables. When reading the table, we do not retrieve the whole information of the excel or csv file, only 4 columns are necessary: labelling (e.g., 1-21M1O1.A1L1), RpoB, PsGenus, HrcC:
+
+```{r}
+# Create a function to prepare the data extraction
+
+read_tables <- function(region) { # table and y: region in format the following format Region_O for orchard, or Region_W for woodland (e.g. Kent_O)
+  table <- read_csv(region, skip = 1) # read the table
+  table$Region <- gsub(".csv", "", gsub("_", " ", region)) # add column with region name and replace "_" with " "
+  table$`PCR results` <- paste(table$RpoB, table$PsGenus, table$HrcC, sep = "") # join PCR results (RpoB, PsGenus, HrcC) in one single column
+  table <- table[c("Region", "Labelling", "Isolate", "Plate", "Column", "Row", "Total occupancy (0: no colony; 1:10%; 5:50%; 9:90%,10: fully covered)",	"Number of colony types",	"Translucent",	"Fluorescent (green)",	"White", "Yellow",	"Others", "Psy", "Unspecific",	"Notes on Psy PCR", "PCR results")] # select only those columns of interest "Region", "Labelling", "Isolate", "syr", "PCR results" or "Region", "Labelling", "Isolate", "Plate", "Column", "Row", "Total ccupancy (0: no colony; 1:10%; 5:50%; 9:90%,10: fully covered)",	"Number of coloy types",	"Transluscent",	"Fluorecent (green)",	"White",	"Yellow",	"Others", "syr", "non-specific binding",	"syr PCR notes", "PCR results", "Notes on PCR"
+  table <- table[!is.na(table$Labelling),] # remove non labelled rows
+  table <- table[!grepl("xample", table$Labelling),] # remove example rows
+  table$Blank <- NA
+  return(table)
+} #Regions corresponds to the csv file
+```
+
+Now label the PCR results properly in a new column called Ps presence. Write No result, Confirmed negative, Confirmed positive non-pathogenic and Confirmed positive possibly pathogenic accordingly:
+
+```{r}
+# Create function for new column for Ps presence and PCR result type
+
+ps_presence <- function(table){
+  table$`Ps presence` <- NA # create "Ps presence column
+  table[table$`PCR results`=="000", ][, "Ps presence"] <- "No result" # Add "No result" to "Ps presence" table according to PCR result
+  table[table$`PCR results` %in% c("100", "101"), ][, "Ps presence"] <- "Confirmed negative" # Add "Confirmed negative" to "Ps presence" table according to PCR result
+  table[table$`PCR results` %in% c("010", "110"), ][, "Ps presence"] <- "Confirmed positive non-pathogenic" # Add "Confirmed positive non-pathogenic" to "Ps presence" table according to PCR result
+  table[table$`PCR results` %in% c("001", "011", "111"), ][, "Ps presence"] <- "Confirmed positive possibly pathogenic" # Add "Confirmed positive possibly pathogenic" to "Ps presence" table according to PCR result
+  #table[is.na(table$`PCR results`),][, "Ps presence"] <- "No growth"
+  table$`Ps presence` <- as.factor(table$`Ps presence`) # Define "Ps pesence" column as factor
+  table$Type <- NA
+  table[table$`PCR results`=="000",][, "Type"] <- "Type 1"
+  table[table$`PCR results`=="001",][, "Type"] <- "Type 2"
+  table[table$`PCR results`=="010",][, "Type"] <- "Type 3"
+  table[table$`PCR results`=="011",][, "Type"] <- "Type 4"
+  table[table$`PCR results`=="100",][, "Type"] <- "Type 5"
+  table[table$`PCR results`=="101",][, "Type"] <- "Type 6"
+  table[table$`PCR results`=="110",][, "Type"] <- "Type 7"
+  table[table$`PCR results`=="111",][, "Type"] <- "Type 8"
+  table$Type <- as.factor(table$Type) #Type column has 8 levels, defining it as factor might make things easier
+  table$Type <- factor(table$Type, levels = c(levels(table$Type), "Type 2", "Type 4")) #Types 2 and as factors, since they were not defined as such previously
+  table$Type <- ordered(table$Type, levels=c("Type 1","Type 2","Type 3","Type 4","Type 5","Type 6","Type 7","Type 8")) #we order the different factors
+  return(table)
+}
+```
+
+Now, write a table to retrieve information about the frequency and percentage of the different PCR results:
+
+```{r}
+#Function to retrieve PCR result in form of frequency, percentage or type
+
+presence_tables <- function(table, x){
+  if(x=="frequency"){ #define frequency table
+    p_table <- as.data.frame.matrix((table(table$Region, table$`Ps presence`))) #frequency table
+    p_table$`Confirmed postive` <- rowSums(p_table[,2:3]) #we sum Confirmed positive non-pathogenic and Confirmed positive possibly pathogenic rows to get the Confirmed positive column
+    p_table <- round(p_table, digits = 2)
+    x2 <- as.data.frame.matrix(table(table$Region, table$`Ps presence`)) #prepare the data to retrieve the total samples tested (same table as before but without the new Confirmed positive column)
+    p_table$`Samples tested` <- rowSums(x2) #retrieve the total samples tested
+    p_table <- p_table[,c(6,1:3,5,4)]
+    p_table <- rbind(p_table, colSums(p_table))
+    rownames(p_table)[nrow(p_table)] <- "Total"
+    p_table
+  } else if(x=="percentage"){ #define percentage table
+    p_table <- as.data.frame.matrix(prop.table((table(table$Region, table$`Ps presence`)),1)*100) #this time we are looking for percentages, so we use the prop table*100
+    p_table$`Confirmed postive` <- rowSums(p_table[,2:3])
+    p_table <- round(p_table, digits = 2)
+    x2 <- as.data.frame.matrix(table(table$Region, table$`Ps presence`))
+    p_table[,1:5] <- as.data.frame(lapply(p_table[,1:5],paste0,"%")) #defining the percentage table is similar to the previous table, this tame we paste the % simbol
+    p_table$`Samples tested` <- rowSums(x2)
+    p_table <- p_table[,c(6,1:3,5,4)]
+    p_table
+  } else if(x=="type"){ #we define the type table as we did with the frequency, but selecting the Type column of the data frame istead of the Ps presence
+    p_table <- as.data.frame.matrix(prop.table((table(table$Region, table$Type)),1)*100)
+    p_table <- round(p_table, digits = 2)
+    x2 <- as.data.frame.matrix(table(table$Region, table$Type))
+    p_table$`Samples tested` <- rowSums(x2)
+    p_table[,1:8] <- as.data.frame(lapply(p_table[,1:8],paste0,"%"))
+    p_table <- p_table[,c(9,1:8)]
+    p_table
+  }
+} #Type of table (frequency, percentage or type)
+```
+
+Now we continue defining a function in order to extract the information from the original labels of each strain. We are interested in the information referring to the site, cultivar and tree levels:
+
+```{r}
+# Create a function to extract the necessary information from labelling
+
+labelling <- function(table){
+  table$Place <- str_sub(table$Labelling, -7, -7) # extract place from labeling (Woodland and Orchard)
+  table$Site <- str_sub(table$Labelling, -6, -6) # extract sample site from labeling (Woodland and Orchard)
+  table$Cultivar <- str_sub(table$Labelling, -4, -4) # extract cultivar from labeling
+  table$Tree <- str_sub(table$Labelling, -4, -3) # extract cultivar tree from labeling
+  table$Tissue <- str_sub(table$Labelling, -2, -2) # extract tissue from labeling
+  table$`Full place` <- paste(table$Region, table$Site, sep = "") # join place (Woodland and Orchard) and place number
+  table$`Full place w/ tree` <- paste(table$`Full place`, table$Tree) # join place (Woodland and Orchard) and species
+  table$`Full place` <- paste(table$`Full place`, table$Cultivar) # join place (Woodland and Orchard) and place number
+  table$`Full place O/W` <- paste(table$Region, table$Site, sep = "") #To get the full place (e.g. Kent W O1), join Region and Site columns
+  return(table)
+}
+```
+
+
+```{r}
+# Create a function for ps presence (confirmed positives) at cultivar and tissue level
+
+cultivar_tree <- function(table, type, place){
+  table <- table[table$Place==place,]
+  if(type=="tree"){
+    table$`Ps presence` <- ifelse (table$`Ps presence` %in% c("Confirmed positive non-pathogenic", "Confirmed positive possibly pathogenic"), 1, 0)
+    table$`syr` <- ifelse (table$`syr` %in% c("1", "0.5", "0.5?"), 1, 0) # change "1" to "1", "0.5", "0.5?"
+    table <- as.data.frame(dcast(table, `Full place w/ tree`~Tissue, value.var = "syr", sum))
+    table$`L/S` <- rowSums(table[,2:3])
+    table[c('Region', 'Site', 'Tree')] <- str_split_fixed(table$`Full place w/ tree`, ' ', 3)
+    table$Place <- str_sub(table$Site, 1, 1)
+    table$Cultivar <- str_sub(table$Tree, 1, 1)
+    table <- table[,c(5, 8, 9, 6, 7, 2:4)]
+    table$cultivarlevel <- paste(table$Region, table$Place, sep = " ")
+    table$sitelevel <- paste(table$Region, table$Site, sep = " ")
+    table$cultivarlevel <-paste(table$sitelevel, table$Cultivar, sep = " ")
+    table$placelevel <-paste(table$Region, table$Place, sep = " ")
+    table <-  table %>% 
+                  group_by(cultivarlevel, sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(., across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", cultivarlevel)),
+                  cultivarlevel = if_else(startsWith(Region, "Total"), "", cultivarlevel)) %>%
+                  data.frame
+    table <-  table %>% 
+                  group_by(sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", sitelevel)),
+                  sitelevel = if_else(startsWith(Region, "Total"), "", sitelevel)) %>%
+                  data.frame
+    table <-  table %>% 
+                  group_by(placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", placelevel)),
+                  placelevel = if_else(startsWith(Region, "Total"), "", placelevel)) %>%
+                  data.frame
+    table <-  table[,-1:-3]
+    table
+  } else if(type=="useful"){ #Has HarcC+ into consideration now
+    #table$`Ps presence` <- ifelse (table$`Ps presence` %in% c("Confirmed positive non-pathogenic", "Confirmed positive possibly pathogenic"), 1, 0)
+    #table$`syr` <- ifelse (table$`syr` %in% c("1", "0.5", "0.5?"), 1, 0)
+    #table <- as.data.frame(dcast(table, `Full place w/ tree`~Tissue, value.var = "syr",sum))
+    #table$`L/S` <- rowSums(table[,2:3])
+    #table$`Full place w/ tree` <- str_sub(table$`Full place w/ tree`, 1, -2)
+    #table$L <- ifelse (table$L >=1 , 1, 0)
+    #table$S <- ifelse (table$S >=1 , 1, 0)
+    #table$`L/S` <- ifelse (table$`L/S` >=1 , 1, 0)
+    #table <- aggregate(.~`Full place w/ tree`, table, FUN=sum)
+    #table[c('Region', 'Site', 'Cultivar')] <- str_split_fixed(table$`Full place w/ tree`, ' ', 3)
+    #table$Place <- str_sub(table$Site, 1, 1)
+    #table <- table[,c(5, 8, 6, 7, 2:4)]
+    table$`Ps presence` <- ifelse (table$`Ps presence` %in% c("Confirmed positive possibly pathogenic"), 1, 0)
+    table$Psy <- ifelse (table$Psy %in% c("1", "0.5", "0.5?"), 1, 0) # change "1" to "1", "0.5", "0.5?"
+    table1 <- as.data.frame(dcast(table, `Full place w/ tree`~Tissue, value.var = "Psy",sum))
+    table1$`L/S` <- rowSums(table1[,2:3])
+    table1$`L/S same tree` <- ifelse (table1$L == 0 | table1$S == 0, 0, rowSums(table1[,2:3]))
+    table1$`Full place w/ tree` <- str_sub(table1$`Full place w/ tree`, 1, -2)
+    table1$L <- ifelse (table1$L >=1 , 1, 0)
+    table1$S <- ifelse (table1$S >=1 , 1, 0)
+    table1$`L/S` <- ifelse (table1$`L/S` >=1 , 1, 0)
+    table1$`L/S same tree` <- ifelse (table1$`L/S same tree` , 1, 0)
+    table1 <- aggregate(.~`Full place w/ tree`, table1, FUN=sum)
+    table1[c('Region', 'Site', 'Cultivar')] <- str_split_fixed(table1$`Full place w/ tree`, ' ', 3)
+    table1$Place <- str_sub(table1$Site, 1, 1)
+    table1 <- table1[,c(6, 9, 7, 8, 2:5)]
+    table1
+    table <- table[table$Psy == "1",]
+    table2 <- as.data.frame(dcast(table, `Full place w/ tree`~Tissue, value.var = "Ps presence",sum))
+    table2$`L/S_hrcC` <- rowSums(table2[,2:3])
+    names(table2)[names(table2) == 'L'] <- 'L_hrcC'
+    names(table2)[names(table2) == 'S'] <- 'S_hrcC'
+    table2$`L/S_hrcC same tree` <- ifelse (table2$L_hrcC == 0 | table2$S_hrcC == 0, 0, rowSums(table2[,2:3]))
+    table2$`Full place w/ tree` <- str_sub(table2$`Full place w/ tree`, 1, -2)
+    table2$L_hrcC <- ifelse (table2$L_hrcC >=1 , 1, 0)
+    table2$S_hrcC <- ifelse (table2$S_hrcC >=1 , 1, 0)
+    table2$`L/S_hrcC` <- ifelse (table2$`L/S_hrcC` >=1 , 1, 0)
+    table2$`L/S_hrcC same tree` <- ifelse (table2$`L/S_hrcC same tree` , 1, 0)
+    table2 <- aggregate(.~`Full place w/ tree`, table2, FUN=sum)
+    table2[c('Region', 'Site', 'Cultivar')] <- str_split_fixed(table2$`Full place w/ tree`, ' ', 3)
+    table2$Place <- str_sub(table2$Site, 1, 1)
+    table2 <- table2[,c(6, 9, 7, 8, 2:5)]
+    table2
+    table <- full_join(table1, table2, by = c("Region", "Place", "Site", "Cultivar"))
+    table
+  }
+}#change to ps_summary_table? This function can be deleted, probably. Ask Tracy
+
+# ------------------- Type a "1", "0.5", "0.5?", type b "1"
+
+cultivar_tree_hrc <- function(table, syr, place, syr_type){ #change to ps_summary_table? Change place to site?
+  table <- table[table$Place==place,]
+  if(syr=="1"){
+    table$`Ps presence` <- ifelse (table$`Ps presence` == "Confirmed positive possibly pathogenic", 1, 0)
+    if(syr_type=="a"){
+      table$Psy <- ifelse (table$Psy %in% c("1", "0.5", "0.5?"), 1, 0)
+    } else if(syr_type=="b"){
+      table$Psy <- ifelse (table$Psy %in% c("1"), 1, 0)
+    }
+    table1 <- as.data.frame(dcast(table, `Full place w/ tree`~Tissue, value.var = "Ps presence", sum))
+    table1$`L/S_hrcC` <- rowSums(table1[,2:3])
+    names(table1)[names(table1) == 'L'] <- 'L_hrcC'
+    names(table1)[names(table1) == 'S'] <- 'S_hrcC'
+    table1[c('Region', 'Site', 'Tree')] <- str_split_fixed(table1$`Full place w/ tree`, ' ', 3)
+    table1$Place <- str_sub(table1$Site, 1, 1)
+    table1$Cultivar <- str_sub(table1$Tree, 1, 1)
+    table1 <- table1[,c(5, 8, 9, 6, 7, 2:4)]
+    table1$cultivarlevel <- paste(table1$Region, table1$Place, sep = " ")
+    table1$sitelevel <- paste(table1$Region, table1$Site, sep = " ")
+    table1$cultivarlevel <-paste(table1$sitelevel, table1$Cultivar, sep = " ")
+    table1$placelevel <-paste(table1$Region, table1$Place, sep = " ")
+    table1 <-  table1 %>% 
+                  group_by(cultivarlevel, sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(., across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", cultivarlevel)),
+                  cultivarlevel = if_else(startsWith(Region, "Total"), "", cultivarlevel)) %>%
+                  data.frame
+    table1 <-  table1 %>% 
+                  group_by(sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", sitelevel)),
+                  sitelevel = if_else(startsWith(Region, "Total"), "", sitelevel)) %>%
+                  data.frame
+    table1 <-  table1 %>% 
+                  group_by(placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", placelevel)),
+                  placelevel = if_else(startsWith(Region, "Total"), "", placelevel)) %>%
+                  data.frame
+    table1 <-  table1[,-1:-3]
+    table1
+    table2 <- as.data.frame(dcast(table, `Full place w/ tree`~Tissue, value.var = "Psy", sum))
+    table2$`L/S_Psy` <- rowSums(table2[,2:3])
+    names(table2)[names(table2) == 'L'] <- 'L_Psy'
+    names(table2)[names(table2) == 'S'] <- 'S_Psy'
+    table2[c('Region', 'Site', 'Tree')] <- str_split_fixed(table2$`Full place w/ tree`, ' ', 3)
+    table2$Place <- str_sub(table2$Site, 1, 1)
+    table2$Cultivar <- str_sub(table2$Tree, 1, 1)
+    table2 <- table2[,c(5, 8, 9, 6, 7, 2:4)]
+    table2$cultivarlevel <- paste(table2$Region, table2$Place, sep = " ")
+    table2$sitelevel <- paste(table2$Region, table2$Site, sep = " ")
+    table2$cultivarlevel <-paste(table2$sitelevel, table2$Cultivar, sep = " ")
+    table2$placelevel <-paste(table2$Region, table2$Place, sep = " ")
+    table2 <-  table2 %>% 
+                  group_by(cultivarlevel, sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(., across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", cultivarlevel)),
+                  cultivarlevel = if_else(startsWith(Region, "Total"), "", cultivarlevel)) %>%
+                  data.frame
+    table2 <-  table2 %>% 
+                  group_by(sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", sitelevel)),
+                  sitelevel = if_else(startsWith(Region, "Total"), "", sitelevel)) %>%
+                  data.frame
+    table2 <-  table2 %>% 
+                  group_by(placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", placelevel)),
+                  placelevel = if_else(startsWith(Region, "Total"), "", placelevel)) %>%
+                  data.frame
+    table2 <-  table2[,-1:-3]
+    table
+    table <- full_join(table2, table1, by = c("Region", "Place", "Cultivar", "Site", "Tree"))
+    table[,c(6:11)][is.na(table[,c(6:11)])] <- 0
+    table
+  } else if(syr=="0"){
+    table$`Ps presence` <- ifelse (table$`Ps presence` == "Confirmed positive possibly pathogenic", 1, 0)
+      if(syr_type=="a"){
+        table$Psy <- ifelse (table$Psy %in% c("1", "0.5", "0.5?"), 0, 1)
+      } else if(syr_type=="b"){
+        table$Psy <- ifelse (table$Psy %in% c("1"), 0, 1)
+      }
+    table1 <- as.data.frame(dcast(table, `Full place w/ tree`~Tissue, value.var = "Ps presence", sum))
+    table1$`L/S_hrc` <- rowSums(table1[,2:3])
+    names(table1)[names(table1) == 'L'] <- 'L_hrc'
+    names(table1)[names(table1) == 'S'] <- 'S_hrc'
+    table1[c('Region', 'Site', 'Tree')] <- str_split_fixed(table1$`Full place w/ tree`, ' ', 3)
+    table1$Place <- str_sub(table1$Site, 1, 1)
+    table1$Cultivar <- str_sub(table1$Tree, 1, 1)
+    table1 <- table1[,c(5, 8, 9, 6, 7, 2:4)]
+    table1$cultivarlevel <- paste(table1$Region, table1$Place, sep = " ")
+    table1$sitelevel <- paste(table1$Region, table1$Site, sep = " ")
+    table1$cultivarlevel <-paste(table1$sitelevel, table1$Cultivar, sep = " ")
+    table1$placelevel <-paste(table1$Region, table1$Place, sep = " ")
+    table1 <-  table1 %>% 
+                  group_by(cultivarlevel, sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(., across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", cultivarlevel)),
+                  cultivarlevel = if_else(startsWith(Region, "Total"), "", cultivarlevel)) %>%
+                  data.frame
+    table1 <-  table1 %>% 
+                  group_by(sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", sitelevel)),
+                  sitelevel = if_else(startsWith(Region, "Total"), "", sitelevel)) %>%
+                  data.frame
+    table1 <-  table1 %>% 
+                  group_by(placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", placelevel)),
+                  placelevel = if_else(startsWith(Region, "Total"), "", placelevel)) %>%
+                  data.frame
+    table1 <-  table1[,-1:-3]
+    table1
+    table2 <- as.data.frame(dcast(table, `Full place w/ tree`~Tissue, value.var = "Psy", sum))
+    table2$`L/S_Psy` <- rowSums(table2[,2:3])
+    table2[c('Region', 'Site', 'Tree')] <- str_split_fixed(table2$`Full place w/ tree`, ' ', 3)
+    names(table2)[names(table2) == 'L'] <- 'L_Psy'
+    names(table2)[names(table2) == 'S'] <- 'S_Psy'
+    table2$Place <- str_sub(table2$Site, 1, 1)
+    table2$Cultivar <- str_sub(table2$Tree, 1, 1)
+    table2 <- table2[,c(5, 8, 9, 6, 7, 2:4)]
+    table2$cultivarlevel <- paste(table2$Region, table2$Place, sep = " ")
+    table2$sitelevel <- paste(table2$Region, table2$Site, sep = " ")
+    table2$cultivarlevel <-paste(table2$sitelevel, table2$Cultivar, sep = " ")
+    table2$placelevel <-paste(table2$Region, table2$Place, sep = " ")
+    table2 <-  table2 %>% 
+                  group_by(cultivarlevel, sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(., across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", cultivarlevel)),
+                  cultivarlevel = if_else(startsWith(Region, "Total"), "", cultivarlevel)) %>%
+                  data.frame
+    table2 <-  table2 %>% 
+                  group_by(sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", sitelevel)),
+                  sitelevel = if_else(startsWith(Region, "Total"), "", sitelevel)) %>%
+                  data.frame
+    table2 <-  table2 %>% 
+                  group_by(placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", placelevel)),
+                  placelevel = if_else(startsWith(Region, "Total"), "", placelevel)) %>%
+                  data.frame
+    table2 <-  table2[,-1:-3]
+    table
+    table <- full_join(table2, table1, by = c("Region", "Place", "Cultivar", "Site", "Tree"))
+    table[,c(6:11)][is.na(table[,c(6:11)])] <- 0
+    table
+  }
+}
+
+# -------------------
+
+# Function with Ps presence in Woodland and orchard (with or without cultivar)
+
+place_cultivar_level <- function(table, level, place){
+  if(level=="cultivar"){
+    Ps_table_W <- table[table$Place==place,]
+    Ps_presence_table_W <- as.data.frame.matrix((table(Ps_table_W$`Full place`, Ps_table_W$`Ps presence`)))
+    Ps_presence_table_W$`Confirmed postive` <- rowSums(Ps_presence_table_W[,2:3])
+    Ps_presence_table_W <- round(Ps_presence_table_W, digits = 2)
+    x2 <- as.data.frame.matrix(table(Ps_table_W$`Full place`, Ps_table_W$`Ps presence`))
+    Ps_presence_table_W$`Samples tested` <- rowSums(x2)
+    Ps_presence_table_W <- Ps_presence_table_W[,c(6,1:3,5,4)]
+    Ps_presence_table_W <- rbind(Ps_presence_table_W, colSums(Ps_presence_table_W))
+    rownames(Ps_presence_table_W)[nrow(Ps_presence_table_W)] <- "Total"
+    Ps_presence_table_W
+  } else if(level=="place"){
+    Ps_table_W <- table[table$Place==place,]
+    Ps_presence_table_W <- as.data.frame.matrix((table(Ps_table_W$`Full place O/W`, Ps_table_W$`Ps presence`)))
+    Ps_presence_table_W$`Confirmed postive` <- rowSums(Ps_presence_table_W[,2:3])
+    Ps_presence_table_W <- round(Ps_presence_table_W, digits = 2)
+    x2 <- as.data.frame.matrix(table(Ps_table_W$`Full place O/W`, Ps_table_W$`Ps presence`))
+    Ps_presence_table_W$`Samples tested` <- rowSums(x2)
+    Ps_presence_table_W <- Ps_presence_table_W[,c(6,1:3,5,4)]
+    Ps_presence_table_W <- rbind(Ps_presence_table_W, colSums(Ps_presence_table_W))
+    rownames(Ps_presence_table_W)[nrow(Ps_presence_table_W)] <- "Total"
+    Ps_presence_table_W
+  }
+}
+
+#Cultivar considering tissue in Orchard and Woodland
+
+place_cultivar_level_tissue <- function(table, place){
+    table <- table[table$Place==place,]
+    table_ <- as.data.frame.matrix(table(table$`Full place`, table$`Ps presence`))
+    table_$`Confirmed postive` <- rowSums(table_[,2:3])
+    table_ <- round(table_, digits = 2)
+    x2 <- as.data.frame.matrix(table(table$`Full place`, table$`Ps presence`))
+    table_$`Samples tested` <- rowSums(x2)
+    table_ <- table_[,c(6,1:3,5,4)]
+    table_ <- rbind(table_, colSums(table_))
+    rownames(table_)[nrow(table_)] <- "Total"
+    table_l <- table[table$Tissue=="L",]
+    table_l_ <- as.data.frame.matrix((table(table_l$`Full place`, table_l$`Ps presence`)))
+    table_l_$`Confirmed postive` <- rowSums(table_l_[,2:3])
+    table_l_ <- round(table_l_, digits = 2)
+    x2 <- as.data.frame.matrix(table(table_l$`Full place`, table_l$`Ps presence`))
+    table_l_$`Samples tested` <- rowSums(x2)
+    table_l_ <- table_l_[,c(6,1:3,5,4)]
+    table_l_ <- rbind(table_l_, colSums(table_l_))
+    rownames(table_l_)[nrow(table_l_)] <- "Total"
+    table_s <- table[table$Tissue=="S",]
+    table_s_ <- as.data.frame.matrix((table(table_s$`Full place`, table_s$`Ps presence`)))
+    table_s_$`Confirmed postive` <- rowSums(table_s_[,2:3])
+    table_s_ <- round(table_s_, digits = 2)
+    x2 <- as.data.frame.matrix(table(table_s$`Full place`, table_s$`Ps presence`))
+    table_s_$`Samples tested` <- rowSums(x2)
+    table_s_ <- table_s_[,c(6,1:3,5,4)]
+    table_s_ <- rbind(table_s_, colSums(table_s_))
+    rownames(table_s_)[nrow(table_s_)] <- "Total"
+    table <- cbind(table_l_, table_s_, table_)
+    table <- cbind(` ` = rownames(table), table)
+    table[c('Region', 'Site', 'Cultivar')] <- str_split_fixed(table$" ", ' ', 3)
+    table$Place <- str_sub(table$Site, 1, 1)
+    table$sitelevel <- paste(table$Region, table$Site, sep = " ")
+    table$placelevel <-paste(table$Region, table$Place, sep = " ")
+    table <-  table %>% 
+                  group_by(sitelevel, placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", sitelevel)),
+                  sitelevel = if_else(startsWith(Region, "Total"), "", sitelevel)) %>%
+                  data.frame
+    table <-  table %>% 
+                  group_by(placelevel) %>%
+                  group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                  ungroup %>%
+                  mutate(Region = coalesce(Region, paste("Total", placelevel)),
+                  placelevel = if_else(startsWith(Region, "Total"), "", placelevel)) %>%
+                  data.frame
+    table <- table[,c(22,25, 23:24, 4:21)]
+    table$`TSS3+ve %` <- round(100*(table$Confirmed.positive.possibly.pathogenic/table$Confirmed.postive), 2)
+    table$`TSS3+ve % ` <- round(100*(table$Confirmed.positive.possibly.pathogenic.1/table$Confirmed.postive.1), 2)
+    table$`TSS3+ve %  ` <- round(100*(table$Confirmed.positive.possibly.pathogenic.2/table$Confirmed.postive.2), 2)
+    table[,23:25] <- as.data.frame(lapply(table[,23:25],paste0,"%"))
+    table <- table[,c(1:10,23,11:16,24,17:22,25)]
+    table <- head(table, -2)
+    table
+}
+
+# Cultivar main
+
+just_cultivar <- function(table, place){
+  table <- table[table$Place==place,]
+  table_ <- as.data.frame.matrix(table(table$`Full place`, table$`Ps presence`))
+  table_$`Confirmed postive` <- rowSums(table_[,2:3])
+  table_ <- round(table_, digits = 2)
+  x2 <- as.data.frame.matrix(table(table$`Full place`, table$`Ps presence`))
+  table_$`Samples tested` <- rowSums(x2)
+  table_ <- table_[,c(6,1:3,5,4)]
+  table_ <- rbind(table_, colSums(table_))
+  rownames(table_)[nrow(table_)] <- "Total"
+  table_l <- table[table$Tissue=="L",]
+  table_l_ <- as.data.frame.matrix((table(table_l$`Full place`, table_l$`Ps presence`)))
+  table_l_$`Confirmed postive` <- rowSums(table_l_[,2:3])
+  table_l_ <- round(table_l_, digits = 2)
+  x2 <- as.data.frame.matrix(table(table_l$`Full place`, table_l$`Ps presence`))
+  table_l_$`Samples tested` <- rowSums(x2)
+  table_l_ <- table_l_[,c(6,1:3,5,4)]
+  table_l_ <- rbind(table_l_, colSums(table_l_))
+  rownames(table_l_)[nrow(table_l_)] <- "Total"
+  table_s <- table[table$Tissue=="S",]
+  table_s_ <- as.data.frame.matrix((table(table_s$`Full place`, table_s$`Ps presence`)))
+  table_s_$`Confirmed postive` <- rowSums(table_s_[,2:3])
+  table_s_ <- round(table_s_, digits = 2)
+  x2 <- as.data.frame.matrix(table(table_s$`Full place`, table_s$`Ps presence`))
+  table_s_$`Samples tested` <- rowSums(x2)
+  table_s_ <- table_s_[,c(6,1:3,5,4)]
+  table_s_ <- rbind(table_s_, colSums(table_s_))
+  rownames(table_s_)[nrow(table_s_)] <- "Total"
+  table <- cbind(table_l_, table_s_, table_)
+  table <- cbind(` ` = rownames(table), table)
+  table[c('Region', 'Site', 'Cultivar')] <- str_split_fixed(table$" ", ' ', 3)  
+  table <- table[order(table$Cultivar),]
+  table$Place <- str_sub(table$Site, 1, 1)
+  table$cultivarlevel <- paste(table$Region, table$Cultivar, sep = " ")
+  table$placecultivarlevel <- paste(table$Region, table$Place, table$Cultivar, sep = " ")
+  table <-  table %>% 
+                group_by(cultivarlevel, Cultivar) %>%
+                group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                ungroup %>%
+                mutate(Region = coalesce(Region, paste("Total", cultivarlevel)),
+                cultivarlevel = if_else(startsWith(Region, "Total"), "", cultivarlevel)) %>%
+                data.frame
+  table <-  table %>% 
+                group_by(Cultivar) %>%
+                group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                ungroup %>%
+                mutate(Region = coalesce(Region, paste("Total", Cultivar)),
+                Cultivar = if_else(startsWith(Region, "Total"), "", Cultivar)) %>%
+                data.frame
+  table <- table[,-25]
+  table <- table[,c(22:24, 1, 4:21)]
+  table$`TSS3+ve %` <- round(100*(table$Confirmed.positive.possibly.pathogenic/table$Confirmed.postive), 2)
+  table$`TSS3+ve % ` <- round(100*(table$Confirmed.positive.possibly.pathogenic.1/table$Confirmed.postive.1), 2)
+  table$`TSS3+ve %  ` <- round(100*(table$Confirmed.positive.possibly.pathogenic.2/table$Confirmed.postive.2), 2)
+  table[,23:25] <- as.data.frame(lapply(table[,23:25],paste0,"%"))
+  table <- table[,c(1:10,23,11:16,24,17:22,25)]
+  table <- tail(table, -2)
+  table <- rbind(tail(table, -1), head(table, 1))
+  table
+}
+```
+
+PCR summary
+
+Run the read_tables() function for each place. Be sure that the names of the csv files in brackets match the ones from the original spreadsheet. If not, change the name of the csv files from the original spreadsheet:
+
+```{r}
+#--------------------------------------------------------------------
+# Run the function for each place and store data in one data frame
+#--------------------------------------------------------------------
+
+regions <- list("Kent_O.csv", "Kent_W.csv", "SW_O.csv", "SW_W.csv", "Scotland_O.csv",
+                "Scotland_W.csv", "Hereford_O.csv", "Hereford_W.csv")
+
+Ps_table <- do.call("rbind", lapply(regions, read_tables))
+
+# Create new table with "Ps pesence" and "Type" column
+
+Ps_table <- ps_presence(Ps_table)
+
+# -----------------------------------
+#  Table with Ps presence(frequency)
+# -----------------------------------
+
+frequency <- presence_tables(Ps_table, x="frequency")
+write.xlsx(frequency, "Summary of 21May PCR place level (frequency).xlsx", row.names=TRUE)
+
+kbl(frequency) %>%
+  kable_classic()
+
+# ------------------------------------
+#  Table with Ps presence(percentage)
+# ------------------------------------
+
+percentage <- presence_tables(Ps_table, x="percentage")
+write.xlsx(percentage, "Summary of 21May PCR place level (percentage).xlsx", row.names=TRUE)
+
+kbl(percentage) %>%
+  kable_classic()
+
+# ------------------------------
+#  Table with Ps presence(type)
+# ------------------------------
+
+type_ <- presence_tables(Ps_table, x="type")
+write.xlsx(type_, "Summary of 21May PCR place level (type).xlsx", row.names=TRUE)
+
+kbl(type_, align = "c") %>%
+  kable_classic() %>%
+  add_header_above(c(" " = 1," " = 1, "000" = 1, "001" = 1, "010" = 1, "011" = 1, "100" = 1, "101" = 1, "110" = 1, "111" = 1))
+
+# ----------------------------------------------------------
+#  Full table with proper labelling for next data extraction
+# ----------------------------------------------------------
+
+Ps_table_full <- labelling(Ps_table)
+
+# ------------------------------------------
+#  Table with Ps presence at Woodland level
+# ------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+ps_presence_W <- place_cultivar_level(Ps_table_full, level="place", place="W")
+writeData(wb, "Woodland", ps_presence_W, row.names=TRUE)
+#write.xlsx(ps_presence_W, "Summary of 21May PCR site level (W).xlsx", row.names=TRUE)
+
+# ----------------------------------------
+# Table with Ps presence at Orchard level
+# ----------------------------------------
+
+ps_presence_O <- place_cultivar_level(Ps_table_full, level="place", place = "O")
+writeData(wb, "Orchard", ps_presence_O, row.names=TRUE)
+#write.xlsx(ps_presence_O, "Summary of 21May PCR site level (O).xlsx", row.names=TRUE)
+
+saveWorkbook(wb, file = "Summary of 21May PCR site level.xlsx", overwrite = TRUE)
+
+# --------------------------------------------------------
+#  Table with Ps presence at Woodland and cultivar levels
+# --------------------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+ps_presence_c_W <- place_cultivar_level(Ps_table_full, level="cultivar", place = "W")
+writeData(wb, "Woodland", ps_presence_c_W, row.names=TRUE)
+#write.xlsx(ps_presence_c_W, "Summary of 21May PCR cultivar level (W).xlsx", row.names=TRUE)
+
+# -------------------------------------------------------
+#  Table with Ps presence at Orchard and cultivar levels
+# -------------------------------------------------------
+
+ps_presence_c_O <- place_cultivar_level(Ps_table_full, level="cultivar", place = "O")
+writeData(wb, "Orchard", ps_presence_c_O, row.names=TRUE)
+#write.xlsx(ps_presence_c_O, "Summary of 21May PCR cultivar level (O).xlsx", row.names=TRUE)
+
+saveWorkbook(wb, file = "Summary of 21May PCR cultivar level.xlsx", overwrite = TRUE)
+
+# -------------------------------------------------------------------------------------
+#  Table with number of possitive strains at tree and tissue level (syr PCR summary)
+# -------------------------------------------------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+ps_presence_tree_tissue_W <- cultivar_tree(Ps_table_full, type = "tree", place = "W")
+writeData(wb, "Woodland", ps_presence_tree_tissue_W)
+
+ps_presence_tree_tissue_O <- cultivar_tree(Ps_table_full, type = "tree", place = "O")
+writeData(wb, "Orchard", ps_presence_tree_tissue_O)
+saveWorkbook(wb, file = "Summary of 21May PCR tree and tissue levels syr.xlsx", overwrite = TRUE)
+
+#tree_tissue <- function(table, region, cultivar, site)
+#  table[table$Site %in% site & table$Site %in% site & table$Site %in% site]
+
+# -----------------------------------------------------------------------------------------------------------------------------------------------------
+#  Table with number of postive strains at tree and tissue level (1) among the syr+ve ones, how many are hrcC+ve; (2)the numbers of hrcC+ve but syr-ve
+# -----------------------------------------------------------------------------------------------------------------------------------------------------
+
+#-------Psy positive-------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+ps_presence_tree_tissue_W_1_a <- cultivar_tree_hrc(Ps_table_full, syr = "1", place = "W", syr_type = "a")
+ps_presence_tree_tissue_W_1_b <- cultivar_tree_hrc(Ps_table_full, syr = "1", place = "W", syr_type = "b")
+ps_presence_tree_tissue_W_1 <- full_join(ps_presence_tree_tissue_W_1_a, ps_presence_tree_tissue_W_1_b , by = c("Region", "Place", "Cultivar", "Site", "Tree"))
+ps_presence_tree_tissue_W_1[,c(6:17)][is.na(ps_presence_tree_tissue_W_1[,c(6:17)])] <- 0
+writeData(wb, "Woodland", ps_presence_tree_tissue_W_1)
+#write.xlsx(ps_presence_tree_tissue_W, "Summary of 21May PCR tree and tissue levels (W).xlsx")
+#write.xlsx(ps_presence_tree_tissue_W, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Woodland")
+
+ps_presence_tree_tissue_O_1_a <- cultivar_tree_hrc(Ps_table_full, syr = "1", place = "O", syr_type = "a")
+ps_presence_tree_tissue_O_1_b <- cultivar_tree_hrc(Ps_table_full, syr = "1", place = "O", syr_type = "b")
+ps_presence_tree_tissue_O_1 <- full_join(ps_presence_tree_tissue_O_1_a, ps_presence_tree_tissue_O_1_b, by = c("Region", "Place", "Cultivar", "Site", "Tree"))
+ps_presence_tree_tissue_O_1[,c(6:17)][is.na(ps_presence_tree_tissue_O_1[,c(6:17)])] <- 0
+writeData(wb, "Orchard", ps_presence_tree_tissue_O_1)
+#write.xlsx(ps_presence_tree_tissue_O, "Summary of 21May PCR tree and tissue levels.xlsx")
+#write.xlsx(ps_presence_tree_tissue_O, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Orchard", append=TRUE)
+
+saveWorkbook(wb, file = "Summary of 21Sep PCR tree and tissue levels syr and hrcC_V1.xlsx", overwrite = TRUE)
+
+#-------Psy negative-------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+ps_presence_tree_tissue_W_0_a <- cultivar_tree_hrc(Ps_table_full, syr = "0", place = "W", syr_type = "a")
+ps_presence_tree_tissue_W_0_b <- cultivar_tree_hrc(Ps_table_full, syr = "0", place = "W", syr_type = "b")
+ps_presence_tree_tissue_W_0 <- full_join(ps_presence_tree_tissue_W_0_a, ps_presence_tree_tissue_W_0_b , by = c("Region", "Place", "Cultivar", "Site", "Tree"))
+ps_presence_tree_tissue_W_0[,c(6:17)][is.na(ps_presence_tree_tissue_W_0[,c(6:17)])] <- 0
+writeData(wb, "Woodland", ps_presence_tree_tissue_W_0)
+#write.xlsx(ps_presence_tree_tissue_W, "Summary of 21May PCR tree and tissue levels (W).xlsx")
+#write.xlsx(ps_presence_tree_tissue_W, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Woodland")
+
+ps_presence_tree_tissue_O_0_a <- cultivar_tree_hrc(Ps_table_full, syr = "0", place = "O", syr_type = "a")
+ps_presence_tree_tissue_O_0_b <- cultivar_tree_hrc(Ps_table_full, syr = "0", place = "O", syr_type = "b")
+ps_presence_tree_tissue_O_0 <- full_join(ps_presence_tree_tissue_O_0_a, ps_presence_tree_tissue_O_0_b, by = c("Region", "Place", "Cultivar", "Site", "Tree"))
+ps_presence_tree_tissue_O_0[,c(6:17)][is.na(ps_presence_tree_tissue_O_0[,c(6:17)])] <- 0
+writeData(wb, "Orchard", ps_presence_tree_tissue_O_0)
+#write.xlsx(ps_presence_tree_tissue_O, "Summary of 21May PCR tree and tissue levels.xlsx")
+#write.xlsx(ps_presence_tree_tissue_O, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Orchard", append=TRUE)
+
+saveWorkbook(wb, file = "Summary of 21May PCR tree and tissue levels syr- hrc_trial.xlsx", overwrite = TRUE) #This is the correct table
+
+# -------------------------------------------
+#  Table of useful trees (and leaf or shoot)
+# -------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+ps_presence_useful_trees_W <- cultivar_tree(Ps_table_full, type = "useful", place="W")
+writeData(wb, "Woodland", ps_presence_useful_trees_W)
+#write.xlsx(ps_presence_useful_trees_W, "Summary of 21May PCR useful trees (W).xlsx")
+
+ps_presence_useful_trees_O <- cultivar_tree(Ps_table_full, type = "useful", place="O")
+writeData(wb, "Orchard", ps_presence_useful_trees_O)
+#write.xlsx(ps_presence_useful_trees_O, "Summary of 21May PCR useful trees (O).xlsx")
+
+saveWorkbook(wb, file = "Summary of 21May PCR useful trees syr.xlsx", overwrite = TRUE)
+
+# ---------------------------------------------------------------------------------------------------------
+#  Table of useful trees among the syr+ve ones, how many are hrcC+ve
+# ---------------------------------------------------------------------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+ps_presence_useful_trees_W_a <- cultivar_tree(Ps_table_full, type = "useful", place="W")
+ps_presence_useful_trees_W_b <- cultivar_tree(Ps_table_full, type = "useful", place="W")
+ps_presence_useful_trees_W <- full_join(ps_presence_useful_trees_W_a, ps_presence_useful_trees_W_b, by = c("Region", "Place", "Site", "Cultivar"))
+writeData(wb, "Woodland", ps_presence_useful_trees_W)
+#write.xlsx(ps_presence_useful_trees_W, "Summary of 21May PCR useful trees (W).xlsx")
+
+ps_presence_useful_trees_O_a <- cultivar_tree(Ps_table_full, type = "useful", place="O")
+ps_presence_useful_trees_O_b <- cultivar_tree(Ps_table_full, type = "useful", place="O")
+ps_presence_useful_trees_O <- full_join(ps_presence_useful_trees_O_a, ps_presence_useful_trees_O_b, by = c("Region", "Place", "Site", "Cultivar"))
+writeData(wb, "Orchard", ps_presence_useful_trees_O)
+#write.xlsx(ps_presence_useful_trees_O, "Summary of 21May PCR useful trees (O).xlsx")
+
+saveWorkbook(wb, file = "Summary of 21Sep PCR useful trees syr hrcC_V1.xlsx", overwrite = TRUE)
+
+
+# -----------------------------------------------------
+#  Cultivar considering tissue in Orchard and Woodland
+# -----------------------------------------------------
+
+ps_presence_C_L_W <- place_cultivar_level_tissue(Ps_table_full, place = "W")
+ps_presence_C_L_O <- place_cultivar_level_tissue(Ps_table_full, place = "O")
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+writeData(wb, 1, x="Leaf", startRow = 1, startCol = 5)
+writeData(wb, 2, x="Leaf", startRow = 1, startCol = 5)
+writeData(wb, 1, x="Shoot", startRow = 1, startCol = 12)
+writeData(wb, 2, x="Shoot", startRow = 1, startCol = 12)
+writeData(wb, 1, x="Leaf and shoot", startRow = 1, startCol = 19)
+writeData(wb, 2, x="Leaf and shoot", startRow = 1, startCol = 19)
+
+writeData(wb, 1, x=ps_presence_C_L_W, startRow = 2, startCol = 1)
+writeData(wb, 2, x=ps_presence_C_L_O, startRow = 2, startCol = 1)
+
+saveWorkbook(wb, file = "Summary of 21May PCR cultivar and tissue levels.xlsx", overwrite = TRUE)
+
+# ---------------
+#  Just cultivar
+# ---------------
+
+ps_presence_just_c_W <- just_cultivar(Ps_table_full, place = "W")
+ps_presence_just_c_O <- just_cultivar(Ps_table_full, place = "O")
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+writeData(wb, 1, x="Leaf", startRow = 1, startCol = 5)
+writeData(wb, 2, x="Leaf", startRow = 1, startCol = 5)
+writeData(wb, 1, x="Shoot", startRow = 1, startCol = 12)
+writeData(wb, 2, x="Shoot", startRow = 1, startCol = 12)
+writeData(wb, 1, x="Leaf and shoot", startRow = 1, startCol = 19)
+writeData(wb, 2, x="Leaf and shoot", startRow = 1, startCol = 19)
+
+writeData(wb, 1, x=ps_presence_just_c_W, startRow = 2, startCol = 1)
+writeData(wb, 2, x=ps_presence_just_c_O, startRow = 2, startCol = 1)
+
+saveWorkbook(wb, file = "Summary of 21May PCR cultivar main.xlsx", overwrite = TRUE)
+```
+
+WGS selection
+
+```{r}
+#-------------Scripts for wGS strain selection----------------#
+#------------------------------------------
+#   Count number of selected WGS strains
+#------------------------------------------
+
+wgs_strain_count <- function(table, place, type){
+  table <- table[table$Place==place,]
+  if(type=="a"){
+    table$Psy <- ifelse (table$Psy %in% c("1", "0.5", "0.5?", "0.1"), 1, 0)
+    table
+  } else if(type=="b"){
+    table$Psy <- ifelse (table$Psy %in% c("1"), 1, 0)
+    table
+  }
+  table <- as.data.frame(dcast(setDT(table), `Full place w/ tree`~Tissue, value.var = c("Psy","hrcC+"), sum)) #change to "change to "Ps presence"
+  table[c('Region', 'Site', 'Tree')] <- str_split_fixed(table$`Full place w/ tree`, ' ', 3)
+  table$Place <- str_sub(table$Site, 1, 1)
+  table$Cultivar <- str_sub(table$Tree, 1, 1)
+  table <- table[,c(4, 7, 8, 5, 6, 2:3)]
+  table$cultivarlevel <- paste(table$Region, table$Place, sep = " ")
+  table$sitelevel <- paste(table$Region, table$Site, sep = " ")
+  table$cultivarlevel <-paste(table$sitelevel, table$Cultivar, sep = " ")
+  table$placelevel <-paste(table$Region, table$Place, sep = " ")
+  table <-  table %>% 
+                group_by(cultivarlevel, sitelevel, placelevel) %>%
+                group_modify(~ bind_rows(., summarize(., across(where(is.numeric), sum)))) %>%
+                ungroup %>%
+                mutate(Region = coalesce(Region, paste("Total", cultivarlevel)),
+                cultivarlevel = if_else(startsWith(Region, "Total"), "", cultivarlevel)) %>%
+                data.frame
+  table <-  table %>% 
+                group_by(sitelevel, placelevel) %>%
+                group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                ungroup %>%
+                mutate(Region = coalesce(Region, paste("Total", sitelevel)),
+                sitelevel = if_else(startsWith(Region, "Total"), "", sitelevel)) %>%
+                data.frame
+  table <-  table %>% 
+                group_by(placelevel) %>%
+                group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                ungroup %>%
+                mutate(Region = coalesce(Region, paste("Total", placelevel)),
+                placelevel = if_else(startsWith(Region, "Total"), "", placelevel)) %>%
+                data.frame
+  table <-  table[,-1:-3]
+  table
+}
+
+#--------------------------------------------------------------------------------------
+# Strain list for leaves (4 per cultivar). Selection with priority (1, 0.5, 0.1), and hrcC+
+#--------------------------------------------------------------------------------------
+
+#Added more columns from the original spreadsheet
+
+Ps_table_full_ <- Ps_table_full[Ps_table_full$Psy %in% c("1", "0.5", "0.5?"),] # change "1" to "1", "0.5", "0.5?"
+Ps_table_full_$`Ps presence` <- ifelse (Ps_table_full_$`Ps presence` == "Confirmed positive possibly pathogenic", 1, 0)
+Ps_table_full_L <- Ps_table_full_[Ps_table_full_$Tissue=="L",] 
+Ps_table_full_L$Psy[Ps_table_full_L$Psy == "0.5?"] <- 0.1
+
+set.seed(123)
+
+Ps_table_full_L_ <- Ps_table_full_L %>%
+  sample_n(nrow(.)) %>%
+  group_by(`Full place w/ tree`) %>%
+  #sample_n(nrow(.)) %>%
+  arrange(desc(Psy), desc(`Ps presence`)) %>% #add , desc(`Ps presence`)
+  slice(1:1) %>%
+  ungroup() %>%
+  sample_n(nrow(.)) %>%
+  group_by(`Full place`) %>%
+  #arrange(desc(as.numeric(Tree)%%2), as.numeric(Tree) * (-1)^(as.numeric(Tree)%%2)) %>%
+  arrange(desc(Psy), desc(`Ps presence`)) %>% #add , desc(`Ps presence`)
+  slice(1:4)
+  
+#View(Ps_table_full_L_)
+
+colnames(Ps_table_full_L_)[19] <- 'hrcC+'
+
+Ps_table_full_L__ <- Ps_table_full_L_[,c(1:3,21:25,7:13,4:6,14:17,19,18)]
+
+Ps_table_full_L__ <- Ps_table_full_L__ %>%
+  ungroup() %>%
+  tidyr::separate(Labelling, c("A","B"), "-") %>%
+  arrange((as.numeric(A)))
+
+Ps_table_full_L__ <- Ps_table_full_L__[,c(1,4:25)]
+
+Ps_table_full_L_W <- Ps_table_full_L__[Ps_table_full_L__$Place=="W",]
+
+Ps_table_full_L_O <- Ps_table_full_L__[Ps_table_full_L__$Place=="O",]
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+writeData(wb, "Woodland", Ps_table_full_L_W)
+writeData(wb, "Orchard", Ps_table_full_L_O)
+
+#saveWorkbook(wb, file = "strain_WGS_list_syr_leaves_hrcC+_V2.xlsx", overwrite = TRUE)
+#saveWorkbook(wb, file = "strain_WGS_list_syr_leaves_V3.xlsx", overwrite = TRUE)
+saveWorkbook(wb, file = "WGS_selection_batch1_fixed_delete.xlsx", overwrite = TRUE)
+
+#--------------------------------------------------------------------------------------------------------
+# Number of strains syr and hrcC for leaves (4 leaves). Selection with priority (1, 0.5, 0.1), and hrcC+
+#--------------------------------------------------------------------------------------------------------
+
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+WGS_presence_tree_tissue_W <- wgs_strain_count(Ps_table_full_L_, place = "W", type = "a")
+writeData(wb, "Woodland", WGS_presence_tree_tissue_W)
+#write.xlsx(ps_presence_tree_tissue_W, "Summary of 21May PCR tree and tissue levels (W).xlsx")
+#write.xlsx(ps_presence_tree_tissue_W, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Woodland")
+
+WGS_presence_tree_tissue_O <- wgs_strain_count(Ps_table_full_L_, place = "O", type = "a")
+writeData(wb, "Orchard", WGS_presence_tree_tissue_O)
+#write.xlsx(ps_presence_tree_tissue_O, "Summary of 21May PCR tree and tissue levels.xlsx")
+#write.xlsx(ps_presence_tree_tissue_O, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Orchard", append=TRUE)
+
+saveWorkbook(wb, file = "WGS_count_batch1_fixed.xlsx", overwrite = TRUE) #Seems like sed.seed has been reseted
+
+#-------------------------------------------------------------------------------------------------
+# Strain list for shoots (2 per cultivar). No priority ("1", "0.5", "0.5?") and no hrcC selection
+#-------------------------------------------------------------------------------------------------
+
+Ps_table_full_ <- Ps_table_full[Ps_table_full$Psy %in% c("1", "0.5", "0.5?"),] # change "1" to "1", "0.5", "0.5?"
+Ps_table_full_$`Ps presence` <- ifelse (Ps_table_full_$`Ps presence` == "Confirmed positive possibly pathogenic", 1, 0)
+Ps_table_full_S <- Ps_table_full_[Ps_table_full_$Tissue=="S",] 
+Ps_table_full_S$Psy[Ps_table_full_S$Psy == "0.5?"] <- 0.1
+
+set.seed(123)
+
+Ps_table_full_S_ <- Ps_table_full_S %>%
+  sample_n(nrow(.)) %>%
+  group_by(`Full place w/ tree`) %>%
+  #sample_n(nrow(.)) %>%
+  #arrange(desc(syr)) %>% #add , desc(`Ps presence`)
+  slice(1:1) %>%
+  ungroup() %>%
+  sample_n(nrow(.)) %>%
+  group_by(`Full place`) %>%
+  #arrange(desc(as.numeric(Tree)%%2), as.numeric(Tree) * (-1)^(as.numeric(Tree)%%2)) %>%
+  #arrange(desc(syr)) %>% #add , desc(`Ps presence`)
+  slice(1:2)
+
+colnames(Ps_table_full_S_)[19] <- 'hrcC+'
+
+Ps_table_full_S__ <- Ps_table_full_S_[,c(1:3,21:25,7:13,4:6,14:17,19,18)]
+
+Ps_table_full_S__ <- Ps_table_full_S__ %>%
+  ungroup() %>%
+  tidyr::separate(Labelling, c("A","B"), "-") %>%
+  arrange((as.numeric(A)))
+
+Ps_table_full_S__ <- Ps_table_full_S__[,c(1,4:25)]
+
+Ps_table_full_S_W <- Ps_table_full_S__[Ps_table_full_S__$Place=="W",]
+
+Ps_table_full_S_O <- Ps_table_full_S__[Ps_table_full_S__$Place=="O",]
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+writeData(wb, "Woodland", Ps_table_full_S_W)
+writeData(wb, "Orchard", Ps_table_full_S_O)
+
+saveWorkbook(wb, file = "WGS_selection_21Sep_shoots_main_subset_V1.xlsx", overwrite = TRUE)
+
+#---------------------------------------------------------------------------------------------------------------------
+# Number of strains syr and hrcC with no priority ("1", "0.5", "0.5?") and no hrcC selection
+# Input from Ps_table_full_S_W and Ps_table_full_S_O for shoots
+#---------------------------------------------------------------------------------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+WGS_presence_tree_tissue_W <- wgs_strain_count(Ps_table_full_S_, place = "W", type="a")
+writeData(wb, "Woodland", WGS_presence_tree_tissue_W)
+#write.xlsx(ps_presence_tree_tissue_W, "Summary of 21May PCR tree and tissue levels (W).xlsx")
+#write.xlsx(ps_presence_tree_tissue_W, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Woodland")
+
+WGS_presence_tree_tissue_O <- wgs_strain_count(Ps_table_full_S_, place = "O", type="a")
+writeData(wb, "Orchard", WGS_presence_tree_tissue_O)
+#write.xlsx(ps_presence_tree_tissue_O, "Summary of 21May PCR tree and tissue levels.xlsx")
+#write.xlsx(ps_presence_tree_tissue_O, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Orchard", append=TRUE)
+
+saveWorkbook(wb, file = "WGS_count_21Sep_shoots_main_subset_V1.xlsx", overwrite = TRUE)
+
+
+#-----------------------------------------------------------------------------------------------------------------
+# Strain list for leaves (4 per cultivar). Selection with no priority ("1", "0.5", "0.5?") and no hrcC selection
+#------------------------------------------------------------------------------------------------------------------
+
+Ps_table_full_ <- Ps_table_full[Ps_table_full$Psy %in% c("1", "0.5", "0.5?"),] # change "1", "0.5", "0.5?" to "1" when needed. Selection of Psy+ results
+Ps_table_full_$`Ps presence` <- ifelse (Ps_table_full_$`Ps presence` == "Confirmed positive possibly pathogenic", 1, 0)
+Ps_table_full_L <- Ps_table_full_[Ps_table_full_$Tissue=="L",] 
+Ps_table_full_L$Psy[Ps_table_full_L$Psy == "0.5?"] <- 0.1
+
+set.seed(123)
+
+Ps_table_full_L_ <- Ps_table_full_L %>%
+  sample_n(nrow(.)) %>%
+  group_by(`Full place w/ tree`) %>%
+  slice(1:1) %>%
+  ungroup() %>%
+  sample_n(nrow(.)) %>%
+  group_by(`Full place`) %>%
+  slice(1:4)
+
+colnames(Ps_table_full_L_)[19] <- 'hrcC+'
+
+Ps_table_full_L__ <- Ps_table_full_L_[,c(1:3,21:25,7:13,4:6,14:17,19,18)]
+
+Ps_table_full_L__ <- Ps_table_full_L__ %>%
+  ungroup() %>%
+  tidyr::separate(Labelling, c("A","B"), "-") %>%
+  arrange((as.numeric(A)))
+
+Ps_table_full_L__ <- Ps_table_full_L__[,c(1,4:25)]
+
+Ps_table_full_L_W <- Ps_table_full_L__[Ps_table_full_L__$Place=="W",]
+
+Ps_table_full_L_O <- Ps_table_full_L__[Ps_table_full_L__$Place=="O",]
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+writeData(wb, "Woodland", Ps_table_full_L_W)
+writeData(wb, "Orchard", Ps_table_full_L_O)
+
+#saveWorkbook(wb, file = "strain_WGS_list_syr_leaves_hrcC+_V2.xlsx", overwrite = TRUE)
+saveWorkbook(wb, file = "WGS_selection_21Sep_leaves_main_subset_V1.xlsx", overwrite = TRUE)
+
+#---------------------------------------------------------------------------------------------------------------------
+# Number of strains syr and hrcC with no priority ("1", "0.5", "0.5?") and no hrcC selection
+# Input from Ps_table_full_L_W and Ps_table_full_L_O
+#---------------------------------------------------------------------------------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+WGS_presence_tree_tissue_W <- wgs_strain_count(Ps_table_full_L_, place = "W", type="a")
+writeData(wb, "Woodland", WGS_presence_tree_tissue_W)
+#write.xlsx(ps_presence_tree_tissue_W, "Summary of 21May PCR tree and tissue levels (W).xlsx")
+#write.xlsx(ps_presence_tree_tissue_W, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Woodland")
+
+WGS_presence_tree_tissue_O <- wgs_strain_count(Ps_table_full_L_, place = "O", type="a")
+writeData(wb, "Orchard", WGS_presence_tree_tissue_O)
+#write.xlsx(ps_presence_tree_tissue_O, "Summary of 21May PCR tree and tissue levels.xlsx")
+#write.xlsx(ps_presence_tree_tissue_O, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Orchard", append=TRUE)
+
+saveWorkbook(wb, file = "WGS_strains_count_Sep21_leaves_main_subset_V1.xlsx", overwrite = TRUE)
+
+
+#-----------index-------------
+#
+#This is for non streaked strains from batch 2#
+#
+#--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Strain list for leaves (4 per cultivar). Selection with no priority ("1", "0.5", "0.5?") and no hrcC selection. Go back (this is for batch 2 non streaked strains)
+#--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Ps_table_full_ <- Ps_table_full[Ps_table_full$Psy %in% c("1", "0.5", "0.5?"),] # change "1" to "1", "0.5", "0.5?" when needed. Selection of Psy+ results
+Ps_table_full_$`Ps presence` <- ifelse (Ps_table_full_$`Ps presence` == "Confirmed positive possibly pathogenic", 1, 0)
+Ps_table_full_L <- Ps_table_full_[Ps_table_full_$Tissue=="L",] 
+Ps_table_full_L$Psy[Ps_table_full_L$Psy == "0.5?"] <- 0.1
+
+set.seed(123)
+
+Ps_table_full_L_ <- Ps_table_full_L %>%
+  sample_n(nrow(.)) %>%
+  group_by(`Full place w/ tree`) %>%
+  #sample_n(nrow(.)) %>%
+  #arrange(desc(syr)) %>% #add , desc(`Ps presence`)
+  slice(1:1) %>%
+  ungroup() %>%
+  sample_n(nrow(.)) %>%
+  group_by(`Full place`) %>%
+  #arrange(desc(as.numeric(Tree)%%2), as.numeric(Tree) * (-1)^(as.numeric(Tree)%%2)) %>%
+  #arrange(desc(syr)) %>% #add , desc(`Ps presence`)
+  slice(1:4)
+  #ungroup()
+#View(Ps_table_full_L_)
+
+colnames(Ps_table_full_L_)[19] <- 'hrcC+'
+
+#Ps_table_full_L_ <- Ps_table_full_L_[,c(1:3,21:25,7:13,4:6,14:17,19,18)]***
+
+#Ps_table_full_L_ <- Ps_table_full_L_ %>%***
+  #ungroup() %>%
+  #tidyr::separate(Labelling, c("A","B"), "-") %>%
+  #arrange((as.numeric(A)))
+
+#Ps_table_full_L_ <- Ps_table_full_L_[,c(1,4:25)]***
+
+Ps_table_full_L_W <- Ps_table_full_L_[Ps_table_full_L_$Place=="W",]
+
+#List is from first batch (w/ hrcC selecion and Psy results at different levels). This is done in order to get those strains that have not been streaked yet in the new selection (view tittle of this chunk)-cont
+
+batch_1_W <- list("2-21M1W1.A1L2b","6-21M1W1.A2L2b","10-21M1W1.A3L2b","21-21M1W1.A6L1a","33-21M1W1.B3L1a","34-21M1W1.B3L2a","41-21M1W1.B5L1b","49-21M1W1.C1L1b","54-21M1W1.C2L2a","57-21M1W1.C3L1a","61-21M1W1.C4L1a","73-21M1W1.D1L1b","86-21M1W1.D4L2a","90-21M1W1.D5L2a","94-21M1W1.D6L2a","97-21M1W1.E1L1b","102-21M1W1.E2L2a","110-21M1W1.E4L2b","114-21M1W1.E5L2b","130-21M1W1.F3L2b","134-21M1W1.F4L2b","137-21M1W1.F5L1a","141-21M1W1.F6L1b","170-21M1W2.A1L2b","181-21M1W2.A4L1b","185-21M1W2.A5L1b","189-21M1W2.A6L1b","193-21M1W2.B1L1a","198-21M1W2.B2L2a","202-21M1W2.B3L2a","206-21M1W2.B4L2b","218-21M1W2.C1L2b","230-21M1W2.C4L2b","233-21M1W2.C5L1b","238-21M1W2.C6L2b","242-21M1W2.D1L2b","245-21M1W2.D2L1b","250-21M1W2.D3L2a","261-21M1W2.D6L1a","266-21M1W2.E1L2b","269-21M1W2.E2L1b","274-21M1W2.E3L2a","282-21M1W2.E5L2a","294-21M1W2.F2L2b","298-21M1W2.F3L2a","302-21M1W2.F4L2a","306-21M1W2.F5L2a","1039-21M2W1.A1L1b","1043-21M2W1.A2L1a","1048-21M2W1.A3L2a","1063-21M2W1.B1L1a","1068-21M2W1.B2L2a","1071-21M2W1.B3L1a","1075-21M2W1.B4L1b","1112-21M2W1.D1L2b","1115-21M2W1.D2L1a","1120-21M2W1.D3L2b","1124-21M2W1.D4L2a","1135-21M2W1.E1L1b","1140-21M2W1.E2L2a","1148-21M2W1.E4L2a","1156-21M2W1.E6L2a","1159-21M2W1.F1L1a","1163-21M2W1.F2L1a","1168-21M2W1.F3L2a","1171-21M2W1.F4L1a","1184-21M2W2.A1L2b","1192-21M2W2.A3L2a","1199-21M2W2.A5L1b","1204-21M2W2.A6L2b","1207-21M2W2.B1L1a","1212-21M2W2.B2L2a","1228-21M2W2.B6L2b","1236-21M2W2.C2L2a","1239-21M2W2.C3L1a","1247-21M2W2.C5L1a","1251-21M2W2.C6L1a","1256-21M2W2.D1L2b","1259-21M2W2.D2L1a","1271-21M2W2.D5L1a","1276-21M2W2.D6L2a","1280-21M2W2.E1L2a","1307-21M2W2.F2L1a","1311-21M2W2.F3L1b","1315-21M2W2.F4L1b","1324-21M2W2.F6L2b","1543-21M3W1.A1L1a","1556-21M3W1.A4L2b","1559-21M3W1.A5L1a","1564-21M3W1.A6L2a","1567-21M3W1.B1L1a","1576-21M3W1.B3L2a","1584-21M3W1.B5L2b","1587-21M3W1.B6L1b","1591-21M3W1.C1L1a","1596-21M3W1.C2L2b","1603-21M3W1.C4L1a","1607-21M3W1.C5L1b","1623-21M3W1.D3L1b","1627-21M3W1.D4L1b","1632-21M3W1.D5L2a","1635-21M3W1.D6L1b","1639-21M3W1.E1L1b","1648-21M3W1.E3L2b","1656-21M3W1.E5L2b","1660-21M3W1.E6L2a","1663-21M3W1.F1L1a","1679-21M3W1.F5L1b","1683-21M3W1.F6L1a","1687-21M3W2.A1L1a","1695-21M3W2.A3L1b","1699-21M3W2.A4L1b","1704-21M3W2.A5L2a","1712-21M3W2.B1L2a","1715-21M3W2.B2L1a","1719-21M3W2.B3L1a","1727-21M3W2.B5L1a","1736-21M3W2.C1L2b","1740-21M3W2.C2L2a","1743-21M3W2.C3L1b","1755-21M3W2.C6L1a","1759-21M3W2.D1L1a","1772-21M3W2.D4L2a","1776-21M3W2.D5L2a","1779-21M3W2.D6L1a","1784-21M3W2.E1L2b","1788-21M3W2.E2L2a","1791-21M3W2.E3L1a","1803-21M3W2.E6L1a","1807-21M3W2.F1L1a","1812-21M3W2.F2L2b","1816-21M3W2.F3L2a","1819-21M3W2.F4L1a","2051-21M4W1.A2L1a","2060-21M4W1.A4L2b","2076-21M4W1.B2L2b","2092-21M4W1.B6L2b","2107-21M4W1.C4L1b","2112-21M4W1.C5L2b","2115-21M4W1.C6L1a","2120-21M4W1.D1L2b","2127-21M4W1.D3L1b","2144-21M4W1.E1L2b","2147-21M4W1.E2L1a","2151-21M4W1.E3L1a","2164-21M4W1.E6L2b","2175-21M4W1.F3L1a","2179-21M4W1.F4L1a","2183-21M4W1.F5L1a","2188-21M4W1.F6L2a","2200-21M4W2.A3L2b","2203-21M4W2.A4L1b","2208-21M4W2.A5L2a","2212-21M4W2.A6L2b","2215-21M4W2.B1L1b","2220-21M4W2.B2L2a","2223-21M4W2.B3L1a","2236-21M4W2.B6L2a","2240-21M4W2.C1L2a","2244-21M4W2.C2L2b","2247-21M4W2.C3L1a","2255-21M4W2.C5L1a","2264-21M4W2.D1L2b","2283-21M4W2.D6L1b","2303-21M4W2.E5L1b","2311-21M4W2.F1L1a")
+
+Ps_table_full_L_W <- Ps_table_full_L_W[!Ps_table_full_L_W$Isolate %in% batch_1_W, ] #-cont-, therefore remove if not needed. Same w/ Orchard
+
+Ps_table_full_L_O <- Ps_table_full_L_[Ps_table_full_L_$Place=="O",]
+
+batch_1_O <- list("8-21M1O1.S2L2a","15-21M1O1.S3L3a","25-21M1O1.S5L1b","43-21M1O1.S8L1b","63-21M1O1.P2L3a","73-21M1O1.P4L1b","85-21M1O1.P6L1a","103-21M1O1.P9L1b","109-21M1O1.K1L1a","115-21M1O1.K2L1b","128-21M1O1.K4L2b","159-21M1O1.K9L3a","177-21M1O2.S3L3b","181-21M1O2.S4L1b","181-21M1O2.S4L1a","199-21M1O2.S7L1b","213-21M1O2.S9L3b","217-21M1O2.P1L1b","237-21M1O2.P4L3b","249-21M1O2.P6L3b","254-21M1O2.P7L2b","273-21M1O2.K1L3b","279-21M1O2.K2L3b","283-21M1O2.K3L1b","297-21M1O2.K5L3a","327-21M1O3.S1L3b","338-21M1O3.S3L2b","337-21M1O3.S3L1a","349-21M1O3.S5L1a","356-21M1O3.S6L2a","379-21M1O3.L1L1a","387-21M1O3.L2L3a","399-21M1O3.L4L3b","411-21M1O3.L6L3a","433-21M1O3.K1L1a","451-21M1O3.K4L1b","459-21M1O3.K5L3a","463-21M1O3.K6L1a","824-21M2O1.K1L2b","828-21M2O1.K2L2a","831-21M2O1.K3L1b","836-21M2O1.K4L2b","855-21M2O1.P3L1b","868-21M2O1.P6L2a","899-21M2O2.K2L1a","908-21M2O2.K4L2b","912-21M2O2.K5L2a","915-21M2O2.K6L1a","924-21M2O2.P2L2b","931-21M2O2.P4L1a","936-21M2O2.P5L2a","940-21M2O2.P6L2a","944-21M2O2.L1L2b","964-21M2O2.L6L2b","971-21M2O3.S2L1a","976-21M2O3.S3L2a","983-21M2O3.S5L1a","987-21M2O3.S6L1b","996-21M2O3.P2L2a","1000-21M2O3.P3L2a","1012-21M2O3.P6L2b","1015-21M2O3.L1L1a","1024-21M2O3.L3L2a","1028-21M2O3.L4L2b","1327-21M3O1.S1L1b","1332-21M3O1.S2L2b","1340-21M3O1.S4L2b","1343-21M3O1.S5L1b","1351-21M3O1.P1L1b","1355-21M3O1.P2L1b","1359-21M3O1.P3L1a","1367-21M3O1.P5L1b","1376-21M3O1.L1L2b","1379-21M3O1.L2L1b","1384-21M3O1.L3L2a","1391-21M3O1.L5L1b","1404-21M3O2.S2L2a","1408-21M3O2.S3L2a","1415-21M3O2.S5L1b","1419-21M3O2.S6L1b","1424-21M3O2.L1L2a","1431-21M3O2.L3L1b","1435-21M3O2.L4L1b","1444-21M3O2.L6L2b","1448-21M3O2.K1L2b","1451-21M3O2.K2L1b","1455-21M3O2.K3L1a","1463-21M3O2.K5L1a","1831-21M4O1.S1L1a","1835-21M4O1.S2L1b","1837-21M4O1.A2S1a","1844-21M4O1.S4L2a","1848-21M4O1.S5L2a","1855-21M4O1.P1L1b","1860-21M4O1.P2L2b","1864-21M4O1.P3L2a","1871-21M4O1.P5L1b","1887-21M4O1.L3L1b","1891-21M4O1.L4L1b","1895-21M4O1.L5L1b","1899-21M4O1.L6L1b","1903-21M4O2.S1L1b","1916-21M4O2.S4L2b","1920-21M4O2.S5L2a","1923-21M4O2.S6L1a","1931-21M4O2.K2L1a","1939-21M4O2.K4L1b","1948-21M4O2.K6L2a","1959-21M4O2.L3L1a","1967-21M4O2.L5L1b","1971-21M4O2.L6L1b","1976-21M4O3.L1L2a","1979-21M4O3.L2L1a","1983-21M4O3.L3L1a","1991-21M4O3.L5L1b","2004-21M4O3.S2L2b","2008-21M4O3.S3L2a","2032-21M4O3.K3L2b","2035-21M4O3.K4L1a","2039-21M4O3.K5L1b","2043-21M4O3.K6L1a")
+
+Ps_table_full_L_O <- Ps_table_full_L_O[!Ps_table_full_L_O$Isolate %in% batch_1_O, ]
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+writeData(wb, "Woodland", Ps_table_full_L_W)
+writeData(wb, "Orchard", Ps_table_full_L_O)
+
+#saveWorkbook(wb, file = "strain_WGS_list_syr_leaves_hrcC+_V2.xlsx", overwrite = TRUE)
+saveWorkbook(wb, file = "strain_WGS_list_syr_leaves_non_streaked_strains_V2.xlsx", overwrite = TRUE)
+
+#---------------------------------------------------------------------------------------------------------------------
+# Number of strains syr and hrcC with no priority ("1", "0.5", "0.5?") and no hrcC selection for non-streaked strains
+# Input from Ps_table_full_L_W and Ps_table_full_L_O
+#---------------------------------------------------------------------------------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+WGS_presence_tree_tissue_W <- wgs_strain_count(Ps_table_full_L_W, place = "W", type="a")
+writeData(wb, "Woodland", WGS_presence_tree_tissue_W)
+#write.xlsx(ps_presence_tree_tissue_W, "Summary of 21May PCR tree and tissue levels (W).xlsx")
+#write.xlsx(ps_presence_tree_tissue_W, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Woodland")
+
+WGS_presence_tree_tissue_O <- wgs_strain_count(Ps_table_full_L_O, place = "O", type="a")
+writeData(wb, "Orchard", WGS_presence_tree_tissue_O)
+#write.xlsx(ps_presence_tree_tissue_O, "Summary of 21May PCR tree and tissue levels.xlsx")
+#write.xlsx(ps_presence_tree_tissue_O, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Orchard", append=TRUE)
+
+saveWorkbook(wb, file = "WGS_strains_count_leaves_non_streaked_strains_V2.xlsx", overwrite = TRUE)
+
+```
+
+Annex
+
+
+```{r}
+#Used batch 1 fixed table
+
+wgs_strain_count <- function(table, place, type){
+  table <- table[table$Place==place,]
+  if(type=="a"){
+    table$`syr` <- ifelse (table$`syr` %in% c("1", "0.5", "0.5?", "0.1"), 1, 0)
+    table
+  } else if(type=="b"){
+    table$`syr` <- ifelse (table$`syr` %in% c("1"), 1, 0)
+    table
+  }
+  table <- as.data.frame(dcast(setDT(table), `Full place w/ tree`~Tissue, value.var = c("syr","hrcC+"), sum)) #change to "change to "Ps presence"
+  table[c('Region', 'Site', 'Tree')] <- str_split_fixed(table$`Full place w/ tree`, ' ', 3)
+  table$Place <- str_sub(table$Site, 1, 1)
+  table$Cultivar <- str_sub(table$Tree, 1, 1)
+  table <- table[,c(4, 7, 8, 5, 6, 2:3)]
+  table$cultivarlevel <- paste(table$Region, table$Place, sep = " ")
+  table$sitelevel <- paste(table$Region, table$Site, sep = " ")
+  table$cultivarlevel <-paste(table$sitelevel, table$Cultivar, sep = " ")
+  table$placelevel <-paste(table$Region, table$Place, sep = " ")
+  table <-  table %>% 
+                group_by(cultivarlevel, sitelevel, placelevel) %>%
+                group_modify(~ bind_rows(., summarize(., across(where(is.numeric), sum)))) %>%
+                ungroup %>%
+                mutate(Region = coalesce(Region, paste("Total", cultivarlevel)),
+                cultivarlevel = if_else(startsWith(Region, "Total"), "", cultivarlevel)) %>%
+                data.frame
+  table <-  table %>% 
+                group_by(sitelevel, placelevel) %>%
+                group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                ungroup %>%
+                mutate(Region = coalesce(Region, paste("Total", sitelevel)),
+                sitelevel = if_else(startsWith(Region, "Total"), "", sitelevel)) %>%
+                data.frame
+  table <-  table %>% 
+                group_by(placelevel) %>%
+                group_modify(~ bind_rows(., summarize(na.omit(.), across(where(is.numeric), sum)))) %>%
+                ungroup %>%
+                mutate(Region = coalesce(Region, paste("Total", placelevel)),
+                placelevel = if_else(startsWith(Region, "Total"), "", placelevel)) %>%
+                data.frame
+  table <-  table[,-1:-3]
+  table
+}
+
+W_batch1 <- labelling(W_batch1)
+W_batch1$`hrcC+` <- as.numeric(W_batch1$`hrcC+`)
+class(W_batch1$`hrcC+`)
+trial1 <- wgs_strain_count(W_batch1, "W", "a")
+
+O_batch1 <- labelling(O_batch1)
+O_batch1$`hrcC+` <- as.numeric(O_batch1$`hrcC+`)
+trial2 <- wgs_strain_count(O_batch1, "O", "a")
+
+wb <- createWorkbook()
+addWorksheet(wb, "Woodland")
+addWorksheet(wb, "Orchard")
+
+writeData(wb, "Woodland", trial1)
+#write.xlsx(ps_presence_tree_tissue_W, "Summary of 21May PCR tree and tissue levels (W).xlsx")
+#write.xlsx(ps_presence_tree_tissue_W, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Woodland")
+
+writeData(wb, "Orchard", trial2)
+#write.xlsx(ps_presence_tree_tissue_O, "Summary of 21May PCR tree and tissue levels.xlsx")
+#write.xlsx(ps_presence_tree_tissue_O, file="Summary of 21May PCR tree and tissue levels.xlsx", sheetName="Orchard", append=TRUE)
+
+saveWorkbook(wb, file = "WGS_selection_batch1_fixed_V2.xlsx", overwrite = TRUE) #V2 takes input from orignial batch 1 table with fixed hrcC values 
+
+```
