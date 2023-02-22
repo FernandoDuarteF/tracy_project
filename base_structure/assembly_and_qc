@@ -1,0 +1,244 @@
+import os
+conditions = glob_wildcards("sequences/{condition}_1.fastq.gz").condition
+
+#def out_db_prokka(start):
+#for dirname, dirnames, filenames in os.walk(".snakemake/conda"):
+#    #print(dirname, dirnames, filenames)
+#    for names in filenames:
+#        paths = os.path.join(dirname, names)
+#        path = paths.split("/")
+#        #print(path)
+#        if all([fold in path for fold in ["bin", "generate_plot.py"]]):
+#                print("/".join(path))
+#        #else:
+            #return("Path not found")
+#print(out_db_prokka(".snakemake/conda") + "/1-TIGRFAMs_15.0.hmm")
+
+rule all:
+    input:
+        expand("trimmed_reads/{cond}_{read}_{trim}.fastq", cond = conditions, read = ["1", "2"], trim = ["trimmed", "trimmed_un"]),
+        expand("assemblies/{cond}/{cond}.fasta", cond = conditions),
+        expand("assemblies/{cond}", cond = conditions),
+        expand("quast/{cond}/transposed_report.tsv", cond = conditions),
+        expand("busco/{cond}/run_bacteria_odb10/full_table.tsv", cond = conditions),
+        expand("busco_summary/{out}", out = ["busco_figure.png", "busco_figure.R"]),
+        #expand("busco_summary/short_summary.specific.bacteria_odb10.{cond}.txt", cond = conditions),
+        "checkm/checkm_db/checkm_data_2015_01_16.tar.gz",
+        expand("checkm/{cond}/{cond}_stats.tsv", cond = conditions),
+        "quast/results_summary.tsv",
+        "checkm/stats_every_strain.txt",
+        "seq_pass_assembly_qc.txt"
+        #expand(out_db_prokka(".snakemake/conda") + "{db}", db = ["/1-hmm_PGAP.hmm", "/2-Pfam-A.hmm", "/3-HAMAP.hmm"]),
+        #expand("prokka/{cond}/{cond}.gff", cond = conditions)
+
+rule trimmomatic:
+    input:
+        F = "sequences/{cond}_1.fastq.gz",
+        R = "sequences/{cond}_2.fastq.gz",
+        Adapter = "scripts/adapters.fasta"
+    output:
+        "trimmed_reads/{cond}_1_trimmed.fastq",
+        "trimmed_reads/{cond}_1_trimmed_un.fastq",
+        "trimmed_reads/{cond}_2_trimmed.fastq",
+        "trimmed_reads/{cond}_2_trimmed_un.fastq"
+    conda:
+        "conda/trimmomatic.yaml"
+    shell:
+        "trimmomatic PE -threads 8  {input.F} {input.R} "
+        "{output} ILLUMINACLIP:{input.Adapter}:2:30:10 MINLEN:40"
+
+rule assembly:
+    input:
+        F = "trimmed_reads/{cond}_1_trimmed.fastq",
+        R = "trimmed_reads/{cond}_2_trimmed.fastq"
+    params:
+        "assemblies/{cond}",
+    output:
+        out_file = "assemblies/{cond}/{cond}.fasta",
+        out_dir = directory("assemblies/{cond}")
+    conda:
+        "conda/spades.yaml"
+    shell:
+        """
+        spades.py -k 21,33,55,77,99,127 -m 28 --phred-offset 33 --careful -1 \
+        {input.F} -2 {input.R} -t 8  -o {params} --cov-cutoff auto
+        mv assemblies/{wildcards.cond}/contigs.fasta {output.out_file}
+        """
+
+rule quast:
+    input:
+        "assemblies/{cond}/{cond}.fasta"
+    params:
+        "quast/{cond}"
+    output:
+        "quast/{cond}/transposed_report.tsv"
+        #outpath_busco = "busco/{cond}/
+    conda:
+        "conda/quast.yaml"
+    shell:
+        """
+        quast.py --threads 8 -o {params} {input}
+        """
+
+rule cat_quast:
+    input:
+        expand("quast/{cond}/transposed_report.tsv", cond = conditions)
+    output:
+        "quast/results_summary.tsv"
+    shell:
+        """
+        cat {input} | sed '1p;/^Assembly/d' | sort -n > {output}
+        """
+
+
+rule busco:
+    input:
+        "assemblies/{cond}/{cond}.fasta"
+    params:
+         "bacteria_odb10"
+    output:
+        "busco/{cond}/run_bacteria_odb10/full_table.tsv"
+        #"busco/{cond}/short_summary.{cond}.odb10.txt"
+    conda:
+        "conda/busco.yaml"
+    shell:
+        """
+        busco -m genome -i {input} -o {wildcards.cond} --out_path busco -l {params} -f
+        """
+
+rule busco_summary:
+    input:
+        directory("busco")
+    params:
+        "busco_summary"
+    output:
+        "busco_summary/busco_figure.png",
+        "busco_summary/busco_figure.R",
+        #"busco_summary/short_summary.specific.bacteria_odb10.{cond}.txt"
+    conda:
+        "conda/busco.yaml"
+    shell:
+        """
+        rm -r {params}
+        mkdir {params}
+        cp {input}/*/short_summary.*.*.txt {params}
+        python3 .snakemake/conda/*/bin/generate_plot.py -wd {params}
+        """
+
+rule set_checkm_db:
+    params:
+        db = "https://data.ace.uq.edu.au/public/CheckM_databases/checkm_data_2015_01_16.tar.gz",
+        db_dir = "checkm/checkm_db"
+    output:
+        "checkm/checkm_db/checkm_data_2015_01_16.tar.gz"
+    conda:
+        "conda/checkm.yaml"
+    shell:
+        """
+        mkdir -p {params.db_dir}
+        cd {params.db_dir}
+        wget {params.db}
+        tar -zxvf * 
+        export CHECKM_DATA_PATH=.
+        cd
+        """
+
+rule checkm:
+    input:
+        infolder = directory("assemblies/{cond}")
+    params:
+        outfolder = "checkm/{cond}"
+        #table = "{cond}_stats.tsv"
+    conda:
+        "conda/checkm.yaml"
+    output:
+        "checkm/{cond}/{cond}_stats.tsv"
+    shell:
+        """
+        checkm taxonomy_wf -t 8 --tab_table -f {output} -x fasta domain Bacteria {input.infolder} {params.outfolder}
+        """
+
+rule cat_checkm:
+    input:
+        expand("checkm/{cond}/{cond}_stats.tsv", cond = conditions)
+    output:
+        "checkm/stats_every_strain.txt"
+    shell:
+        """
+        cat {input} | sed '1p;/^[Bb]\|^scaffolds/d' > {output}
+        """
+
+rule seq_pass:
+    input:
+       checkm = "checkm/stats_every_strain.txt",
+       quast = "quast/results_summary.tsv"
+    params:
+        N50 = 40000,
+        completness = 95,
+        contamination = 5
+    output:
+        "seq_pass_assembly_qc.txt"
+    shell:
+        """
+        python scripts/filter_seqs.py {input.checkm} {input.quast} \
+        {params.N50} {params.completness} {params.contamination} > {output}
+        mkdir pass_sequences
+        for seq in $(cat {output}); do
+            cp assemblies/*/$seq* pass_sequences;
+        done
+        """
+
+#def out_db_prokka(start):
+#    for dirname, dirnames, filenames in os.walk(start):
+#        for subdirname in dirnames:
+#            paths = os.path.join(dirname, subdirname)
+#            path = paths.split("/")
+#            if all([fold in path for fold in ["hmm", "db"]]):
+#                return("/".join(path))
+            #else:
+                #return("Path not found")
+
+#rule set_db_prokka:
+#    params:
+#        TIGRFAMs = "https://ftp.ncbi.nlm.nih.gov/hmm/current/hmm_PGAP.LIB",
+#        Pfam = "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz"
+#    conda:
+#        "conda/prokka.yaml"
+#    output:
+#        TIGRFAMs = out_db_prokka(".snakemake/conda") + "/1-hmm_PGAP.hmm",
+#        Pfam = out_db_prokka(".snakemake/conda") + "/2-Pfam-A.hmm",
+#        HAMAP = out_db_prokka(".snakemake/conda") + "/3-HAMAP.hmm"
+#    shell:
+#        """
+#        cd $(find .snakemake/conda -type d | grep  db/hmm)
+#        wget {params.Pfam}
+#        wget {params.TIGRFAMs}
+#        gzip -d Pfam-A.hmm.gz
+#        mv hmm_PGAP.LIB 1-hmm_PGAP.hmm
+#        mv Pfam-A.hmm 2-Pfam-A.hmm
+#        mv HAMAP.hmm 3-HAMAP.hmm
+#        cd
+#        echo "starting prokka setupdb"
+#        prokka --setupdb
+#        """
+#
+#rule run_prokka:
+#    input:
+#        "assemblies/{cond}/{cond}.fasta"
+#    params:
+#        "{cond}"
+#    output:
+#        "prokka/{cond}/{cond}.gff"
+#    conda:
+#        "conda/prokka.yaml"
+#    shell:
+#        """
+#        prokka --outdir {params} --prefix {wildcards.cond} {input} --force --cpus 4
+#        """
+
+    #os.rename("assemblies/i/contigs.fasta", "assemblies/i/i.fasta")
+    
+
+        #"megahit -1 {input.F} -2 {input.R} -f -o {params.outdir} --out-prefix " 
+        #"{params.prefix}"
+        #"{params.prefix} --num-cpu-threads 6 -m 0.5 --mem-flag 1 --tmp-dir /tmp"
